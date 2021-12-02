@@ -1,5 +1,4 @@
 #pragma once
-#include <asio.hpp>
 #include <entity/fwd.hpp>
 
 class NetClient;
