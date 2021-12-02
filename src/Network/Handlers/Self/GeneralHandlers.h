@@ -1,16 +1,16 @@
 #pragma once
 #include <memory>
 
-class MessageHandler;
-class NetworkClient;
-struct NetworkPacket;
+class NetPacketHandler;
+class NetClient;
+struct NetPacket;
 namespace InternalSocket
 {
     class GeneralHandlers
     {
     public:
-        static void Setup(MessageHandler*);
-        static bool HandleConnected(std::shared_ptr<NetworkClient>, std::shared_ptr<NetworkPacket>&);
-        static bool HandleSendAddress(std::shared_ptr<NetworkClient>, std::shared_ptr<NetworkPacket>&);
+        static void Setup(NetPacketHandler*);
+        static bool HandleConnected(std::shared_ptr<NetClient>, std::shared_ptr<NetPacket>);
+        static bool HandleSendAddress(std::shared_ptr<NetClient>, std::shared_ptr<NetPacket>);
     };
 }

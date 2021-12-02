@@ -1,9 +1,9 @@
 #include "AuthHandlers.h"
 #include <entt.hpp>
-#include <Networking/NetworkPacket.h>
-#include <Networking/MessageHandler.h>
-#include <Networking/NetworkClient.h>
-#include <Networking/AddressType.h>
+#include <Networking/NetStructures.h>
+#include <Networking/NetPacket.h>
+#include <Networking/NetClient.h>
+#include <Networking/NetPacketHandler.h>
 #include <Utils/ByteBuffer.h>
 #include "../../../../Utils/ServiceLocator.h"
 #include "../../../../ECS/Components/Network/AuthenticationSingleton.h"
@@ -14,12 +14,12 @@
 
 namespace InternalSocket
 {
-    void AuthHandlers::Setup(MessageHandler* messageHandler)
+    void AuthHandlers::Setup(NetPacketHandler* netPacketHandler)
     {
-        messageHandler->SetMessageHandler(Opcode::SMSG_LOGON_CHALLENGE, { ConnectionStatus::AUTH_CHALLENGE, sizeof(ServerLogonChallenge), AuthHandlers::HandshakeHandler });
-        messageHandler->SetMessageHandler(Opcode::SMSG_LOGON_HANDSHAKE, { ConnectionStatus::AUTH_HANDSHAKE, sizeof(ServerLogonHandshake), AuthHandlers::HandshakeResponseHandler });
+        netPacketHandler->SetMessageHandler(Opcode::SMSG_LOGON_CHALLENGE, { ConnectionStatus::AUTH_CHALLENGE, sizeof(ServerLogonChallenge), AuthHandlers::HandshakeHandler });
+        netPacketHandler->SetMessageHandler(Opcode::SMSG_LOGON_HANDSHAKE, { ConnectionStatus::AUTH_HANDSHAKE, sizeof(ServerLogonHandshake), AuthHandlers::HandshakeResponseHandler });
     }
-    bool AuthHandlers::HandshakeHandler(std::shared_ptr<NetworkClient> networkClient, std::shared_ptr<NetworkPacket>& packet)
+    bool AuthHandlers::HandshakeHandler(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
     {
         ServerLogonChallenge logonChallenge;
         logonChallenge.Deserialize(packet->payload);
@@ -30,7 +30,7 @@ namespace InternalSocket
         // If "ProcessChallenge" fails, we have either hit a bad memory allocation or a SRP-6a safety check, thus we should close the connection
         if (!authenticationSingleton.srp.ProcessChallenge(logonChallenge.s, logonChallenge.B))
         {
-            networkClient->Close(asio::error::no_data);
+            netClient->Close();
             return true;
         }
 
@@ -44,12 +44,12 @@ namespace InternalSocket
 
         u16 payloadSize = clientResponse.Serialize(buffer);
         buffer->Put<u16>(payloadSize, 2);
-        networkClient->Send(buffer);
+        netClient->Send(buffer);
 
-        networkClient->SetStatus(ConnectionStatus::AUTH_HANDSHAKE);
+        netClient->SetConnectionStatus(ConnectionStatus::AUTH_HANDSHAKE);
         return true;
     }
-    bool AuthHandlers::HandshakeResponseHandler(std::shared_ptr<NetworkClient> networkClient, std::shared_ptr<NetworkPacket>& packet)
+    bool AuthHandlers::HandshakeResponseHandler(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
     {
         // Handle handshake response
         ServerLogonHandshake logonResponse;
@@ -62,7 +62,7 @@ namespace InternalSocket
         if (!authenticationSingleton.srp.VerifySession(logonResponse.HAMK))
         {
             DebugHandler::PrintWarning("Unsuccessful Login");
-            networkClient->Close(asio::error::no_permission);
+            netClient->Close();
             return true;
         }
         else
@@ -73,17 +73,16 @@ namespace InternalSocket
         std::shared_ptr<Bytebuffer> buffer = Bytebuffer::Borrow<128>();
         buffer->Put(Opcode::CMSG_CONNECTED);
         buffer->PutU16(8);
-        buffer->Put(AddressType::AUTH);
+        buffer->Put(AddressType::REGION);
         buffer->PutU8(0);
 
-        std::shared_ptr<NetworkServer> server = connectionDeferredSingleton.networkServer;
-        auto& localEndpoint = networkClient->socket()->local_endpoint();
-        buffer->PutU32(localEndpoint.address().to_v4().to_uint());
-        buffer->PutU16(server->GetPort());
+        const NetSocket::ConnectionInfo& connectionInfo = connectionDeferredSingleton.netServer->GetSocket()->GetConnectionInfo();
+        buffer->PutU32(connectionInfo.ipAddr);
+        buffer->PutU16(connectionInfo.port);
 
-        networkClient->Send(buffer);
+        netClient->Send(buffer);
 
-        networkClient->SetStatus(ConnectionStatus::AUTH_SUCCESS);
+        netClient->SetConnectionStatus(ConnectionStatus::AUTH_SUCCESS);
         return true;
     }
 }

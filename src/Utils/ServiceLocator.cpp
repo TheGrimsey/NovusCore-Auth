@@ -1,22 +1,22 @@
 #include "ServiceLocator.h"
-#include <Networking/MessageHandler.h>
+#include <Networking/NetPacketHandler.h>
 
 entt::registry* ServiceLocator::_gameRegistry = nullptr;
-MessageHandler* ServiceLocator::_selfMessageHandler = nullptr;
-MessageHandler* ServiceLocator::_clientMessageHandler = nullptr;
+NetPacketHandler* ServiceLocator::_selfNetPacketHandler = nullptr;
+NetPacketHandler* ServiceLocator::_clientNetPacketHandler = nullptr;
 
 void ServiceLocator::SetRegistry(entt::registry* registry)
 {
     assert(_gameRegistry == nullptr);
     _gameRegistry = registry;
 }
-void ServiceLocator::SetSelfMessageHandler(MessageHandler* messageHandler)
+void ServiceLocator::SetSelfNetPacketHandler(NetPacketHandler* netPacketHandler)
 {
-    assert(_selfMessageHandler == nullptr);
-    _selfMessageHandler = messageHandler;
+    assert(_selfNetPacketHandler == nullptr);
+    _selfNetPacketHandler = netPacketHandler;
 }
-void ServiceLocator::SetClientMessageHandler(MessageHandler* messageHandler)
+void ServiceLocator::SetClientNetPacketHandler(NetPacketHandler* netPacketHandler)
 {
-    assert(_clientMessageHandler == nullptr);
-    _clientMessageHandler = messageHandler;
+    assert(_clientNetPacketHandler == nullptr);
+    _clientNetPacketHandler = netPacketHandler;
 }

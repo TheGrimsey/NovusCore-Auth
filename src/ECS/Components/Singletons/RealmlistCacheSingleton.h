@@ -2,7 +2,6 @@
 #include <NovusTypes.h>
 #include <robin_hood.h>
 #include <mutex>
-#include <Networking/Defines.h>
 
 struct RealmlistEntry
 {
@@ -28,6 +27,6 @@ public:
     const f32 refreshCacheTime = 30;
     f32 refreshTimer = 30;
 
-    std::shared_ptr<Bytebuffer> realmlistBuffer = Bytebuffer::Borrow<NETWORK_BUFFER_SIZE>();
+    std::shared_ptr<Bytebuffer> realmlistBuffer = Bytebuffer::Borrow<8192>();
     robin_hood::unordered_map<u16, RealmlistEntry> realmlistMap;
 };

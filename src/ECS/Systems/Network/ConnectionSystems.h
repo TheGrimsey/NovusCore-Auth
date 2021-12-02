@@ -2,22 +2,21 @@
 #include <asio.hpp>
 #include <entity/fwd.hpp>
 
-class NetworkServer;
-class BaseSocket;
+class NetClient;
 class ConnectionUpdateSystem
 {
 public:
     static void Update(entt::registry& registry);
 
     // Handlers for Network Server
-    static void Server_HandleConnect(NetworkServer* server, asio::ip::tcp::socket* socket, const asio::error_code& error);
+    static bool Server_HandleConnect(std::shared_ptr<NetClient> netClient);
 
     // Handlers for Network Client
-    static void Client_HandleRead(BaseSocket* socket);
-    static void Client_HandleDisconnect(BaseSocket* socket);
-    static void Self_HandleConnect(BaseSocket* socket, bool connected);
-    static void Self_HandleRead(BaseSocket* socket);
-    static void Self_HandleDisconnect(BaseSocket* socket);
+    static void Client_HandleRead(std::shared_ptr<NetClient> netClient);
+    static void Client_HandleDisconnect(std::shared_ptr<NetClient> netClient);
+    static void Self_HandleConnect(std::shared_ptr<NetClient> netClient, bool connected);
+    static void Self_HandleRead(std::shared_ptr<NetClient> netClient);
+    static void Self_HandleDisconnect(std::shared_ptr<NetClient> netClient);
 };
 
 class ConnectionDeferredSystem

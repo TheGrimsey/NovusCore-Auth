@@ -2,9 +2,7 @@
 #include <thread>
 #include <Utils/Timer.h>
 #include "Utils/ServiceLocator.h"
-#include <Networking/InputQueue.h>
-#include <Networking/MessageHandler.h>
-#include <Networking/NetworkClient.h>
+#include <Networking/NetPacketHandler.h>
 #include <tracy/Tracy.hpp>
 
 // Component Singletons
@@ -30,9 +28,16 @@
 EngineLoop::EngineLoop()
     : _isRunning(false), _inputQueue(256), _outputQueue(16)
 {
-    _network.asioService = std::make_shared<asio::io_service>(2);
-    _network.client = std::make_shared<NetworkClient>(new asio::ip::tcp::socket(*_network.asioService.get()));
-    _network.server = std::make_shared<NetworkServer>(_network.asioService, 4000);
+    _network.client = std::make_shared<NetClient>();
+    _network.client->Init(NetSocket::Mode::TCP);
+
+    std::shared_ptr<NetSocket> clientSocket = _network.client->GetSocket();
+    clientSocket->SetBlockingState(false);
+    clientSocket->SetNoDelayState(true);
+    clientSocket->SetSendBufferSize(8192);
+    clientSocket->SetReceiveBufferSize(8192);
+
+    _network.server = std::make_shared<NetServer>();
 }
 
 EngineLoop::~EngineLoop()
@@ -43,9 +48,6 @@ void EngineLoop::Start()
 {
     if (_isRunning)
         return;
-
-    std::thread threadRunIoService = std::thread(&EngineLoop::RunIoService, this);
-    threadRunIoService.detach();
 
     std::thread threadRun = std::thread(&EngineLoop::Run, this);
     threadRun.detach();
@@ -71,17 +73,11 @@ bool EngineLoop::TryGetMessage(Message& message)
     return _outputQueue.try_dequeue(message);
 }
 
-void EngineLoop::RunIoService()
-{
-    asio::io_service::work ioWork(*_network.asioService.get());
-    _network.asioService->run();
-}
 void EngineLoop::Run()
 {
     _isRunning = true;
 
     SetupUpdateFramework();
-    _updateFramework.gameRegistry.create();
 
     TimeSingleton& timeSingleton = _updateFramework.gameRegistry.set<TimeSingleton>();
 
@@ -89,24 +85,23 @@ void EngineLoop::Run()
     dbSingleton.auth.Connect("localhost", 3306, "root", "ascent", "novuscore", 0);
 
     RealmlistCacheSingleton& realmlistCacheSingleton = _updateFramework.gameRegistry.set<RealmlistCacheSingleton>();
-
     ConnectionSingleton& connectionSingleton = _updateFramework.gameRegistry.set<ConnectionSingleton>();
-    connectionSingleton.networkClient = _network.client;
-    connectionSingleton.networkClient->SetReadHandler(std::bind(&ConnectionUpdateSystem::Self_HandleRead, std::placeholders::_1));
-    connectionSingleton.networkClient->SetConnectHandler(std::bind(&ConnectionUpdateSystem::Self_HandleConnect, std::placeholders::_1, std::placeholders::_2));
-    connectionSingleton.networkClient->SetDisconnectHandler(std::bind(&ConnectionUpdateSystem::Self_HandleDisconnect, std::placeholders::_1));
-
     ConnectionDeferredSingleton& connectionDeferredSingleton = _updateFramework.gameRegistry.set<ConnectionDeferredSingleton>();
-    connectionDeferredSingleton.networkServer = _network.server;
-
     AuthenticationSingleton& authenticationSingleton = _updateFramework.gameRegistry.set<AuthenticationSingleton>();
 
-    connectionSingleton.networkClient->Connect("127.0.0.1", 8000); // This is the IP/Port for the local Novus-Service
-    _network.server->SetConnectionHandler(std::bind(&ConnectionUpdateSystem::Server_HandleConnect, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-    _network.server->Start();
+    connectionSingleton.netClient = _network.client;
+    bool didConnect = connectionSingleton.netClient->Connect("127.0.0.1", 8000);
+    ConnectionUpdateSystem::Self_HandleConnect(connectionSingleton.netClient, didConnect);
+
+    connectionDeferredSingleton.netServer = _network.server;
+    connectionDeferredSingleton.netServer->SetOnConnectCallback(ConnectionUpdateSystem::Server_HandleConnect);
+    if (!_network.server->Init(NetSocket::Mode::TCP, "127.0.0.1", 4000))
+    {
+        DebugHandler::PrintFatal("Network : Failed to initialize server (NovusCore - Auth)");
+    }
 
     Timer timer;
-    f32 targetDelta = 1.0f / 60.0f;
+    f32 targetDelta = 1.0f / 5.0f;
     while (true)
     {
         f32 deltaTime = timer.GetDeltaTime();
@@ -150,10 +145,10 @@ void EngineLoop::Run()
 
 bool EngineLoop::Update()
 {
-    ZoneScopedNC("Update", tracy::Color::Blue2)
+    ZoneScopedNC("Update", tracy::Color::Blue2);
     {
-        ZoneScopedNC("HandleMessages", tracy::Color::Green3)
-            Message message;
+        ZoneScopedNC("HandleMessages", tracy::Color::Green3);
+        Message message;
 
         while (_inputQueue.try_dequeue(message))
         {
@@ -166,8 +161,8 @@ bool EngineLoop::Update()
             }
             else if (message.code == MSG_IN_PING)
             {
-                ZoneScopedNC("Ping", tracy::Color::Green3)
-                    Message pongMessage;
+                ZoneScopedNC("Ping", tracy::Color::Green3);
+                Message pongMessage;
                 pongMessage.code = MSG_OUT_PRINT;
                 pongMessage.message = new std::string("PONG!");
                 _outputQueue.enqueue(pongMessage);
@@ -212,15 +207,15 @@ void EngineLoop::SetupUpdateFramework()
 }
 void EngineLoop::SetMessageHandler()
 {
-    auto selfMessageHandler = new MessageHandler();
-    auto clientMessageHandler = new MessageHandler();
-    ServiceLocator::SetSelfMessageHandler(selfMessageHandler);
-    ServiceLocator::SetClientMessageHandler(clientMessageHandler);
+    NetPacketHandler* selfNetPacketHandler = new NetPacketHandler();
+    ServiceLocator::SetSelfNetPacketHandler(selfNetPacketHandler);
+    InternalSocket::AuthHandlers::Setup(selfNetPacketHandler);
+    InternalSocket::GeneralHandlers::Setup(selfNetPacketHandler);
 
-    InternalSocket::AuthHandlers::Setup(selfMessageHandler);
-    InternalSocket::GeneralHandlers::Setup(selfMessageHandler);
-    Client::AuthHandlers::Setup(clientMessageHandler);
-    Client::GeneralHandlers::Setup(clientMessageHandler);
+    NetPacketHandler* clientNetPacketHandler = new NetPacketHandler();
+    ServiceLocator::SetClientNetPacketHandler(clientNetPacketHandler);
+    Client::AuthHandlers::Setup(clientNetPacketHandler);
+    Client::GeneralHandlers::Setup(clientNetPacketHandler);
 }
 void EngineLoop::UpdateSystems()
 {

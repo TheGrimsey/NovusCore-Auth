@@ -1,10 +1,11 @@
 #include "AuthHandlers.h"
 #include <entt.hpp>
 #include <Database/DBConnection.h>
-#include <Networking/NetworkPacket.h>
-#include <Networking/MessageHandler.h>
-#include <Networking/NetworkClient.h>
-#include <Networking/AddressType.h>
+#include <Networking/NetStructures.h>
+#include <Networking/NetPacket.h>
+#include <Networking/NetClient.h>
+#include <Networking/NetPacketHandler.h>
+#include <Networking/PacketUtils.h>
 #include <Utils/ByteBuffer.h>
 #include <Utils/StringUtils.h>
 
@@ -18,19 +19,21 @@
 #include <Utils/DebugHandler.h>
 namespace Client
 {
-    void AuthHandlers::Setup(MessageHandler* messageHandler)
+    void AuthHandlers::Setup(NetPacketHandler* netPacketHandler)
     {
-        u16 authChallengeMinSize = sizeof(u8) * 4 + sizeof(u16) + 4 + 256;
-        messageHandler->SetMessageHandler(Opcode::CMSG_LOGON_CHALLENGE, { ConnectionStatus::AUTH_CHALLENGE, authChallengeMinSize, authChallengeMinSize + 33, AuthHandlers::HandshakeHandler });
-        messageHandler->SetMessageHandler(Opcode::CMSG_LOGON_HANDSHAKE, { ConnectionStatus::AUTH_HANDSHAKE, sizeof(ClientLogonHandshake), AuthHandlers::HandshakeResponseHandler });
+        u16 authChallengeMinSize = static_cast<u16>(sizeof(u8) * 4 + sizeof(u16) + 4 + 256);
+        i16 authChallengeMaxSize = authChallengeMinSize + 33;
+        netPacketHandler->SetMessageHandler(Opcode::CMSG_LOGON_CHALLENGE, { ConnectionStatus::AUTH_CHALLENGE, authChallengeMinSize, authChallengeMaxSize, AuthHandlers::HandshakeHandler });
+        netPacketHandler->SetMessageHandler(Opcode::CMSG_LOGON_HANDSHAKE, { ConnectionStatus::AUTH_HANDSHAKE, sizeof(ClientLogonHandshake), AuthHandlers::HandshakeResponseHandler });
     }
-    bool AuthHandlers::HandshakeHandler(std::shared_ptr<NetworkClient> client, std::shared_ptr<NetworkPacket>& packet)
+
+    bool AuthHandlers::HandshakeHandler(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
     {
         ClientLogonChallenge logonChallenge;
         logonChallenge.Deserialize(packet->payload);
 
         entt::registry* registry = ServiceLocator::GetRegistry();
-        Authentication& authentication = registry->get<Authentication>(client->GetEntity());
+        Authentication& authentication = registry->get<Authentication>(netClient->GetEntity());
         authentication.username = logonChallenge.username;
 
         std::shared_ptr<Bytebuffer> sBuffer = Bytebuffer::Borrow<4>();
@@ -48,7 +51,7 @@ namespace Client
         if (result->GetAffectedRows() == 0)
         {
             DebugHandler::PrintWarning("Unsuccessful Login for: %s", authentication.username.c_str());
-            client->Close(asio::error::no_data);
+            netClient->Close();
             return true;
         }
 
@@ -71,7 +74,7 @@ namespace Client
         if (!authentication.srp.StartVerification(authentication.username, logonChallenge.A))
         {
             DebugHandler::PrintWarning("Unsuccessful Login for: %s", authentication.username.c_str());
-            client->Close(asio::error::no_data);
+            netClient->Close();
             return true;
         }
 
@@ -87,23 +90,23 @@ namespace Client
 
         u16 payloadSize = serverChallenge.Serialize(buffer);
         buffer->Put<u16>(payloadSize, 2);
-        client->Send(buffer);
+        netClient->Send(buffer);
 
-        client->SetStatus(ConnectionStatus::AUTH_HANDSHAKE);
+        netClient->SetConnectionStatus(ConnectionStatus::AUTH_HANDSHAKE);
         return true;
     }
-    bool AuthHandlers::HandshakeResponseHandler(std::shared_ptr<NetworkClient> client, std::shared_ptr<NetworkPacket>& packet)
+    bool AuthHandlers::HandshakeResponseHandler(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
     {
         ClientLogonHandshake clientHandshake;
         clientHandshake.Deserialize(packet->payload);
 
         entt::registry* registry = ServiceLocator::GetRegistry();
-        Authentication& authentication = registry->get<Authentication>(client->GetEntity());
+        Authentication& authentication = registry->get<Authentication>(netClient->GetEntity());
 
         if (!authentication.srp.VerifySession(clientHandshake.M1))
         {
             DebugHandler::PrintWarning("Unsuccessful Login for: %s", authentication.username.c_str());
-            client->Close(asio::error::no_permission);
+            netClient->Close();
             return true;
         }
         else
@@ -120,9 +123,9 @@ namespace Client
 
         u16 payloadSize = serverHandsake.Serialize(buffer);
         buffer->Put<u16>(payloadSize, 2);
-        client->Send(buffer);
+        netClient->Send(buffer);
 
-        client->SetStatus(ConnectionStatus::AUTH_SUCCESS);
+        netClient->SetConnectionStatus(ConnectionStatus::AUTH_SUCCESS);
         return true;
     }
 }

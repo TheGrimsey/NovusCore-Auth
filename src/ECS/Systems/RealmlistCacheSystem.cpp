@@ -1,6 +1,6 @@
 #include "RealmlistCacheSystem.h"
 #include <entt.hpp>
-#include <Networking/Opcode.h>
+#include <Networking/NetStructures.h>
 #include "../Components/Singletons/TimeSingleton.h"
 #include "../Components/Singletons/DBSingleton.h"
 #include "../Components/Singletons/RealmlistCacheSingleton.h"
@@ -14,6 +14,9 @@ void RealmlistCacheSystem::Update(entt::registry& registry)
         realmlistCacheSingleton.refreshTimer -= realmlistCacheSingleton.refreshCacheTime;
 
         DBSingleton& dbSingleton = registry.ctx<DBSingleton>();
+        if (!dbSingleton.auth.IsOpen())
+            return;
+
         std::shared_ptr<QueryResult> result = dbSingleton.auth.Query("SELECT id, name, type, flags, permissionMask, maxConnections, population FROM realmlist;");
         if (result->GetAffectedRows() == 0)
             return;

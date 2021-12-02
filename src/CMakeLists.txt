@@ -9,7 +9,6 @@ find_assign_files(${FILES})
 add_compile_definitions(NOMINMAX _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
-	asio::asio
 	common::common
 	network::network
 	Entt::Entt

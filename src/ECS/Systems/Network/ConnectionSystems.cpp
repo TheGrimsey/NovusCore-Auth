@@ -1,156 +1,252 @@
 #include "ConnectionSystems.h"
 #include <entt.hpp>
-#include <Networking/MessageHandler.h>
-#include <Networking/NetworkServer.h>
+#include <Networking/NetClient.h>
+#include <Networking/NetServer.h>
+#include <Networking/NetPacketHandler.h>
+#include <Utils/DebugHandler.h>
+#include "../../../Utils/ServiceLocator.h"
+#include "../../Components/Singletons/TimeSingleton.h"
 #include "../../Components/Network/ConnectionSingleton.h"
 #include "../../Components/Network/AuthenticationSingleton.h"
 #include "../../Components/Network/ConnectionComponent.h"
 #include "../../Components/Network/ConnectionDeferredSingleton.h"
 #include "../../Components/Network/Authentication.h"
-#include "../../../Utils/ServiceLocator.h"
 #include <tracy/Tracy.hpp>
 
 void ConnectionUpdateSystem::Update(entt::registry& registry)
 {
     ZoneScopedNC("ConnectionUpdateSystem::Update", tracy::Color::Blue)
     ConnectionSingleton& connectionSingleton = registry.ctx<ConnectionSingleton>();
-    if (connectionSingleton.networkClient)
+    if (connectionSingleton.netClient)
     {
-        std::shared_ptr<NetworkPacket> packet = nullptr;
-
-        MessageHandler* networkMessageHandler = ServiceLocator::GetSelfMessageHandler();
-        while (connectionSingleton.packetQueue.try_dequeue(packet))
+        if (connectionSingleton.netClient->Read())
         {
-#ifdef NC_Debug
-            DebugHandler::PrintSuccess("[Network/ClientSocket]: CMD: %u, Size: %u", packet->header.opcode, packet->header.size);
-#endif // NC_Debug
+            Self_HandleRead(connectionSingleton.netClient);
+        }
 
-            if (!networkMessageHandler->CallHandler(connectionSingleton.networkClient, packet))
+        if (!connectionSingleton.netClient->IsConnected())
+        {
+            if (!connectionSingleton.didHandleDisconnect)
             {
-                connectionSingleton.networkClient->Close(asio::error::shut_down);
-                return;
+                connectionSingleton.didHandleDisconnect = true;
+
+                Self_HandleDisconnect(connectionSingleton.netClient);
             }
         }
-    }
-
-    MessageHandler* clientMessageHandler = ServiceLocator::GetClientMessageHandler();
-    auto view = registry.view<ConnectionComponent>();
-    view.each([&registry, &clientMessageHandler](const auto, ConnectionComponent& connection)
+        else
         {
-            std::shared_ptr<NetworkPacket> packet;
-            while (connection.packetQueue.try_dequeue(packet))
+            NetPacketHandler* selfNetPacketHandler = ServiceLocator::GetSelfNetPacketHandler();
+
+            std::shared_ptr<NetPacket> packet = nullptr;
+            while (connectionSingleton.packetQueue.try_dequeue(packet))
             {
 #ifdef NC_Debug
-                DebugHandler::PrintSuccess("[Network/ServerSocket]: CMD: %u, Size: %u", packet->header.opcode, packet->header.size);
+                DebugHandler::PrintSuccess("[Network/ClientSocket]: CMD: %u, Size: %u", packet->header.opcode, packet->header.size);
 #endif // NC_Debug
 
-                if (!clientMessageHandler->CallHandler(connection.connection, packet))
+                if (!selfNetPacketHandler->CallHandler(connectionSingleton.netClient, packet))
                 {
-                    connection.connection->Close(asio::error::shut_down);
+                    connectionSingleton.netClient->Close();
                     return;
                 }
             }
-        });
-}
-
-void ConnectionUpdateSystem::Server_HandleConnect(NetworkServer* server, asio::ip::tcp::socket* socket, const asio::error_code& error)
-{
-    if (!error)
-    {
-#ifdef NC_Debug
-        DebugHandler::PrintSuccess("[Network/Socket]: Client connected from (%s)", socket->remote_endpoint().address().to_string().c_str());
-#endif // NC_Debug
-
-        socket->non_blocking(true);
-        socket->set_option(asio::socket_base::send_buffer_size(NETWORK_BUFFER_SIZE));
-        socket->set_option(asio::socket_base::receive_buffer_size(NETWORK_BUFFER_SIZE));
-        socket->set_option(asio::ip::tcp::no_delay(true));
-
-        entt::registry* registry = ServiceLocator::GetRegistry();
-        auto& connectionDeferredSingleton = registry->ctx<ConnectionDeferredSingleton>();
-        connectionDeferredSingleton.newConnectionQueue.enqueue(socket);
+        }
     }
-}
 
-void ConnectionUpdateSystem::Client_HandleRead(BaseSocket* socket)
-{
-    NetworkClient* client = static_cast<NetworkClient*>(socket);
+    TimeSingleton& timeSingleton = registry.ctx<TimeSingleton>();
+    f32 deltaTime = timeSingleton.deltaTime;
 
-    std::shared_ptr<Bytebuffer> buffer = client->GetReceiveBuffer();
-    entt::registry* registry = ServiceLocator::GetRegistry();
+    NetPacketHandler* clientNetPacketHandler = ServiceLocator::GetClientNetPacketHandler();
 
-    entt::entity entity = static_cast<entt::entity>(client->GetEntityId());
-    ConnectionComponent& connectionComponent = registry->get<ConnectionComponent>(entity);
-
-    while (buffer->GetActiveSize())
+    auto view = registry.view<ConnectionComponent>();
+    view.each([&registry, &clientNetPacketHandler, &deltaTime](const auto, ConnectionComponent& connection)
     {
-        Opcode opcode = Opcode::INVALID;
-        u16 size = 0;
-
-        buffer->Get(opcode);
-        buffer->GetU16(size);
-
-        if (size > NETWORK_BUFFER_SIZE)
+        if (connection.netClient->Read())
         {
-            client->Close(asio::error::shut_down);
+            Client_HandleRead(connection.netClient);
+        }
+
+        if (!connection.netClient->IsConnected())
+        {
+            Client_HandleDisconnect(connection.netClient);
             return;
         }
 
-        std::shared_ptr<NetworkPacket> packet = NetworkPacket::Borrow();
+        std::shared_ptr<NetPacket> packet = nullptr;
+        while (connection.packetQueue.try_dequeue(packet))
+        {
+#ifdef NC_Debug
+           DebugHandler::PrintSuccess("[Network/ServerSocket]: CMD: %u, Size: %u", packet->header.opcode, packet->header.size);
+#endif // NC_Debug
+
+            if (!clientNetPacketHandler->CallHandler(connection.netClient, packet))
+            {
+                connection.netClient->Close();
+                return;
+            }
+
+            if (connection.lowPriorityBuffer->writtenData)
+            {
+                connection.lowPriorityTimer += deltaTime;
+                if (connection.lowPriorityTimer >= LOW_PRIORITY_TIME)
+                {
+                    connection.lowPriorityTimer = 0;
+                    connection.netClient->Send(connection.lowPriorityBuffer);
+                    connection.lowPriorityBuffer->Reset();
+                }
+            }
+
+            if (connection.mediumPriorityBuffer->writtenData)
+            {
+                connection.mediumPriorityTimer += deltaTime;
+                if (connection.mediumPriorityTimer >= MEDIUM_PRIORITY_TIME)
+                {
+                    connection.mediumPriorityTimer = 0;
+                    connection.netClient->Send(connection.mediumPriorityBuffer);
+                    connection.mediumPriorityBuffer->Reset();
+                }
+            }
+
+            if (connection.highPriorityBuffer->writtenData)
+            {
+                connection.netClient->Send(connection.highPriorityBuffer);
+                connection.highPriorityBuffer->Reset();
+            }
+        }
+    });
+}
+
+bool ConnectionUpdateSystem::Server_HandleConnect(std::shared_ptr<NetClient> netClient)
+{
+#ifdef NC_Debug
+    const NetSocket::ConnectionInfo& connectionInfo = netClient->GetSocket()->GetConnectionInfo();
+    DebugHandler::PrintSuccess("[Network/Socket]: Client connected from (%s, %u)", connectionInfo.ipAddrStr.c_str(), connectionInfo.port);
+#endif // NC_Debug
+
+    std::shared_ptr<NetSocket> socket = netClient->GetSocket();
+    socket->SetBlockingState(false);
+    socket->SetSendBufferSize(8192);
+    socket->SetReceiveBufferSize(8192);
+    socket->SetNoDelayState(true);
+
+    entt::registry* registry = ServiceLocator::GetRegistry();
+    auto& connectionDeferredSingleton = registry->ctx<ConnectionDeferredSingleton>();
+    connectionDeferredSingleton.newConnectionQueue.enqueue(netClient);
+
+    return true;
+}
+
+void ConnectionUpdateSystem::Client_HandleRead(std::shared_ptr<NetClient> netClient)
+{
+    std::shared_ptr<Bytebuffer> buffer = netClient->GetReadBuffer();
+    entt::registry* registry = ServiceLocator::GetRegistry();
+
+    const entt::entity& entity = netClient->GetEntity();
+    ConnectionComponent& connectionComponent = registry->get<ConnectionComponent>(entity);
+
+    while (size_t activeSize = buffer->GetActiveSize())
+    {
+        // We have received a partial header and need to read more
+        if (activeSize < sizeof(PacketHeader))
+        {
+            buffer->Normalize();
+            break;
+        }
+
+        PacketHeader* header = reinterpret_cast<PacketHeader*>(buffer->GetReadPointer());
+
+        if (header->opcode == Opcode::INVALID || header->opcode > Opcode::MAX_COUNT)
+        {
+#ifdef NC_Debug
+            DebugHandler::PrintError("Received Invalid Opcode (%u) from network stream", static_cast<u16>(header->opcode));
+#endif // NC_Debug
+            break;
+        }
+
+        if (header->size > 8192)
+        {
+#ifdef NC_Debug
+            DebugHandler::PrintError("Received Invalid Opcode Size (%u) from network stream", header->size);
+#endif // NC_Debug
+            break;
+        }
+        size_t sizeWithoutHeader = activeSize - sizeof(PacketHeader);
+
+        // We have received a valid header, but we have yet to receive the entire payload
+        if (sizeWithoutHeader < header->size)
+        {
+            buffer->Normalize();
+            break;
+        }
+
+        // Skip Header
+        buffer->SkipRead(sizeof(PacketHeader));
+
+        std::shared_ptr<NetPacket> packet = NetPacket::Borrow();
         {
             // Header
             {
-                packet->header.opcode = opcode;
-                packet->header.size = size;
+                packet->header = *header;
             }
 
             // Payload
             {
-                if (size)
+                if (packet->header.size)
                 {
-                    packet->payload = Bytebuffer::Borrow<NETWORK_BUFFER_SIZE>();
-                    packet->payload->size = size;
-                    packet->payload->writtenData = size;
-                    std::memcpy(packet->payload->GetDataPointer(), buffer->GetReadPointer(), size);
+                    packet->payload = Bytebuffer::Borrow<8192/*NETWORK_BUFFER_SIZE*/ >();
+                    packet->payload->size = packet->header.size;
+                    packet->payload->writtenData = packet->header.size;
+                    std::memcpy(packet->payload->GetDataPointer(), buffer->GetReadPointer(), packet->header.size);
+
+                    // Skip Payload
+                    buffer->SkipRead(header->size);
                 }
             }
 
             connectionComponent.packetQueue.enqueue(packet);
         }
-
-        buffer->readData += size;
     }
 
-    client->Listen();
+    // Only reset if we read everything that was written
+    if (buffer->GetActiveSize() == 0)
+    {
+        buffer->Reset();
+    }
 }
-void ConnectionUpdateSystem::Client_HandleDisconnect(BaseSocket* socket)
+
+void ConnectionUpdateSystem::Client_HandleDisconnect(std::shared_ptr<NetClient> netClient)
 {
 #ifdef NC_Debug
-    DebugHandler::PrintWarning("[Network/Socket]: Client disconnected from (%s)", socket->socket()->remote_endpoint().address().to_string().c_str());
+    const NetSocket::ConnectionInfo& connectionInfo = netClient->GetSocket()->GetConnectionInfo();
+    DebugHandler::PrintWarning("[Network/Socket]: Client disconnected from (%s, %u)", connectionInfo.ipAddrStr.c_str(), connectionInfo.port);
 #endif // NC_Debug
 
     entt::registry* registry = ServiceLocator::GetRegistry();
     auto& connectionDeferredSingleton = registry->ctx<ConnectionDeferredSingleton>();
 
-    NetworkClient* client = static_cast<NetworkClient*>(socket);
-    connectionDeferredSingleton.droppedConnectionQueue.enqueue(static_cast<entt::entity>(client->GetEntityId()));
+    entt::entity entity = netClient->GetEntity();
+    connectionDeferredSingleton.droppedConnectionQueue.enqueue(entity);
 }
-void ConnectionUpdateSystem::Self_HandleConnect(BaseSocket* socket, bool connected)
+
+void ConnectionUpdateSystem::Self_HandleConnect(std::shared_ptr<NetClient> netClient, bool connected)
 {
     if (connected)
     {
 #ifdef NC_Debug
-        DebugHandler::PrintSuccess("[Network/Socket]: Successfully connected to (%s, %u)", socket->socket()->remote_endpoint().address().to_string().c_str(), socket->socket()->remote_endpoint().port());
+        const NetSocket::ConnectionInfo& connectionInfo = netClient->GetSocket()->GetConnectionInfo();
+        DebugHandler::PrintSuccess("[Network/Socket]: Successfully connected to (%s, %u)", connectionInfo.ipAddrStr.c_str(), connectionInfo.port);
 #endif // NC_Debug
 
         entt::registry* registry = ServiceLocator::GetRegistry();
         AuthenticationSingleton& authentication = registry->ctx<AuthenticationSingleton>();
+        ConnectionSingleton& connectionSingleton = registry->ctx<ConnectionSingleton>();
 
         /* Send Initial Packet */
         std::shared_ptr<Bytebuffer> buffer = Bytebuffer::Borrow<512>();
 
         authentication.srp.username = "auth";
         authentication.srp.password = "password";
+        connectionSingleton.didHandleDisconnect = false;
 
         // If StartAuthentication fails, it means A failed to generate and thus we cannot connect
         if (!authentication.srp.StartAuthentication())
@@ -166,72 +262,102 @@ void ConnectionUpdateSystem::Self_HandleConnect(BaseSocket* socket, bool connect
         u16 writtenData = static_cast<u16>(buffer->writtenData) - size;
 
         buffer->Put<u16>(writtenData, 2);
-        socket->Send(buffer);
+        netClient->Send(buffer);
 
-        NetworkClient* networkClient = static_cast<NetworkClient*>(socket);
-        networkClient->SetStatus(ConnectionStatus::AUTH_CHALLENGE);
-        socket->AsyncRead();
+        netClient->SetConnectionStatus(ConnectionStatus::AUTH_CHALLENGE);
     }
     else
     {
 #ifdef NC_Debug
-        DebugHandler::PrintWarning("[Network/Socket]: Failed connecting to (%s, %u)", socket->socket()->remote_endpoint().address().to_string().c_str(), socket->socket()->remote_endpoint().port());
+        const NetSocket::ConnectionInfo& connectionInfo = netClient->GetSocket()->GetConnectionInfo();
+        DebugHandler::PrintWarning("[Network/Socket]: Failed to connect to (%s, %u)", connectionInfo.ipAddrStr.c_str(), connectionInfo.port);
 #endif // NC_Debug
     }
 }
-void ConnectionUpdateSystem::Self_HandleRead(BaseSocket* socket)
+
+void ConnectionUpdateSystem::Self_HandleRead(std::shared_ptr<NetClient> netClient)
 {
     entt::registry* registry = ServiceLocator::GetRegistry();
     ConnectionSingleton& connectionSingleton = registry->ctx<ConnectionSingleton>();
 
-    NetworkClient* client = static_cast<NetworkClient*>(socket);
-    std::shared_ptr<Bytebuffer> buffer = client->GetReceiveBuffer();
+    std::shared_ptr<Bytebuffer> buffer = netClient->GetReadBuffer();
 
-    while (buffer->GetActiveSize())
+    while (size_t activeSize = buffer->GetActiveSize())
     {
-        Opcode opcode = Opcode::INVALID;
-        u16 size = 0;
-
-        buffer->Get(opcode);
-        buffer->GetU16(size);
-
-        if (size > NETWORK_BUFFER_SIZE)
+        // We have received a partial header and need to read more
+        if (activeSize < sizeof(PacketHeader))
         {
-            client->Close(asio::error::shut_down);
-            return;
+            buffer->Normalize();
+            break;
         }
 
-        std::shared_ptr<NetworkPacket> packet = NetworkPacket::Borrow();
+        PacketHeader* header = reinterpret_cast<PacketHeader*>(buffer->GetReadPointer());
+
+        if (header->opcode == Opcode::INVALID || header->opcode > Opcode::MAX_COUNT)
+        {
+#ifdef NC_Debug
+            DebugHandler::PrintError("Received Invalid Opcode (%u) from network stream", static_cast<u16>(header->opcode));
+#endif // NC_Debug
+            break;
+        }
+
+        if (header->size > 8192)
+        {
+#ifdef NC_Debug
+            DebugHandler::PrintError("Received Invalid Opcode Size (%u) from network stream", header->size);
+#endif // NC_Debug
+            break;
+        }
+
+        size_t sizeWithoutHeader = activeSize - sizeof(PacketHeader);
+
+        // We have received a valid header, but we have yet to receive the entire payload
+        if (sizeWithoutHeader < header->size)
+        {
+            buffer->Normalize();
+            break;
+        }
+
+        // Skip Header
+        buffer->SkipRead(sizeof(PacketHeader));
+
+        std::shared_ptr<NetPacket> packet = NetPacket::Borrow();
         {
             // Header
             {
-                packet->header.opcode = opcode;
-                packet->header.size = size;
+                packet->header = *header;
             }
 
             // Payload
             {
-                if (size)
+                if (packet->header.size)
                 {
-                    packet->payload = Bytebuffer::Borrow<NETWORK_BUFFER_SIZE>();
-                    packet->payload->size = size;
-                    packet->payload->writtenData = size;
-                    std::memcpy(packet->payload->GetDataPointer(), buffer->GetReadPointer(), size);
+                    packet->payload = Bytebuffer::Borrow<8192/*NETWORK_BUFFER_SIZE*/ >();
+                    packet->payload->size = packet->header.size;
+                    packet->payload->writtenData = packet->header.size;
+                    std::memcpy(packet->payload->GetDataPointer(), buffer->GetReadPointer(), packet->header.size);
+
+                    // Skip Payload
+                    buffer->SkipRead(header->size);
                 }
             }
 
             connectionSingleton.packetQueue.enqueue(packet);
         }
-
-        buffer->readData += size;
     }
 
-    client->Listen();
+    // Only reset if we read everything that was written
+    if (buffer->GetActiveSize() == 0)
+    {
+        buffer->Reset();
+    }
 }
-void ConnectionUpdateSystem::Self_HandleDisconnect(BaseSocket* socket)
+
+void ConnectionUpdateSystem::Self_HandleDisconnect(std::shared_ptr<NetClient> netClient)
 {
 #ifdef NC_Debug
-    DebugHandler::PrintWarning("[Network/Socket]: Disconnected from (%s, %u)", socket->socket()->remote_endpoint().address().to_string().c_str(), socket->socket()->remote_endpoint().port());
+    const NetSocket::ConnectionInfo& connectionInfo = netClient->GetSocket()->GetConnectionInfo();
+    DebugHandler::PrintWarning("[Network/Socket]: Disconnected from (%s, %u)", connectionInfo.ipAddrStr.c_str(), connectionInfo.port);
 #endif // NC_Debug
 }
 
@@ -241,21 +367,18 @@ void ConnectionDeferredSystem::Update(entt::registry& registry)
 
     if (connectionDeferredSingleton.newConnectionQueue.size_approx() > 0)
     {
-        asio::ip::tcp::socket* socket;
-        while (connectionDeferredSingleton.newConnectionQueue.try_dequeue(socket))
+        std::shared_ptr<NetClient> netClient;
+        while (connectionDeferredSingleton.newConnectionQueue.try_dequeue(netClient))
         {
             entt::entity entity = registry.create();
 
-            Authentication& authentication = registry.emplace<Authentication>(entity);
             ConnectionComponent& connectionComponent = registry.emplace<ConnectionComponent>(entity);
-            connectionComponent.connection = std::make_shared<NetworkClient>(socket, entt::to_integral(entity));
-            connectionComponent.connection->SetStatus(ConnectionStatus::AUTH_CHALLENGE);
+            registry.emplace<Authentication>(entity);
 
-            connectionComponent.connection->SetReadHandler(std::bind(&ConnectionUpdateSystem::Client_HandleRead, std::placeholders::_1));
-            connectionComponent.connection->SetDisconnectHandler(std::bind(&ConnectionUpdateSystem::Client_HandleDisconnect, std::placeholders::_1));
-            connectionComponent.connection->Listen();
+            connectionComponent.netClient = netClient;
 
-            connectionDeferredSingleton.networkServer->AddConnection(connectionComponent.connection);
+            connectionComponent.netClient->SetEntity(entity);
+            connectionComponent.netClient->SetConnectionStatus(ConnectionStatus::AUTH_CHALLENGE);
         }
     }
 

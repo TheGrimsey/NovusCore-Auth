@@ -27,19 +27,19 @@
 #include <Utils/ConcurrentQueue.h>
 #include <Utils/Message.h>
 
-class MessageHandler;
+class NetPacketHandler;
 class ServiceLocator
 {
 public:
     static entt::registry* GetRegistry() { return _gameRegistry; }
     static void SetRegistry(entt::registry* registry);
-    static MessageHandler* GetSelfMessageHandler() { return _selfMessageHandler; }
-    static void SetSelfMessageHandler(MessageHandler* serverMessageHandler);
-    static MessageHandler* GetClientMessageHandler() { return _clientMessageHandler; }
-    static void SetClientMessageHandler(MessageHandler* serverMessageHandler);
+    static NetPacketHandler* GetSelfNetPacketHandler() { return _selfNetPacketHandler; }
+    static void SetSelfNetPacketHandler(NetPacketHandler* selfNetPacketHandler);
+    static NetPacketHandler* GetClientNetPacketHandler() { return _clientNetPacketHandler; }
+    static void SetClientNetPacketHandler(NetPacketHandler* clientNetPacketHandler);
 
 private:
     static entt::registry* _gameRegistry;
-    static MessageHandler* _selfMessageHandler;
-    static MessageHandler* _clientMessageHandler;
+    static NetPacketHandler* _selfNetPacketHandler;
+    static NetPacketHandler* _clientNetPacketHandler;
 };
