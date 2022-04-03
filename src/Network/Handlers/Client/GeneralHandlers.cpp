@@ -13,21 +13,10 @@ namespace Client
 {
     void GeneralHandlers::Setup(NetPacketHandler* netPacketHandler)
     {
-        netPacketHandler->SetMessageHandler(Opcode::CMSG_CONNECTED, { ConnectionStatus::AUTH_SUCCESS, 0, GeneralHandlers::HandleConnected });
         netPacketHandler->SetMessageHandler(Opcode::CMSG_REQUEST_REALMLIST, { ConnectionStatus::CONNECTED, 0, GeneralHandlers::HandleRequestRealmlist });
         netPacketHandler->SetMessageHandler(Opcode::CMSG_SELECT_REALM, { ConnectionStatus::CONNECTED, 1, GeneralHandlers::HandleSelectRealm });
     }
 
-    bool GeneralHandlers::HandleConnected(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
-    {
-        std::shared_ptr<Bytebuffer> buffer = Bytebuffer::Borrow<128>();
-        buffer->Put(Opcode::SMSG_CONNECTED);
-        buffer->PutU16(0);
-        netClient->Send(buffer);
-
-        netClient->SetConnectionStatus(ConnectionStatus::CONNECTED);
-        return true;
-    }
     bool GeneralHandlers::HandleRequestRealmlist(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
     {
         entt::registry* registry = ServiceLocator::GetRegistry();
