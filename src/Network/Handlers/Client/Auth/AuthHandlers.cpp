@@ -125,7 +125,7 @@ namespace Client
         buffer->Put<u16>(payloadSize, 2);
         netClient->Send(buffer);
 
-        netClient->SetConnectionStatus(ConnectionStatus::AUTH_SUCCESS);
+        netClient->SetConnectionStatus(ConnectionStatus::CONNECTED);
         return true;
     }
 }
