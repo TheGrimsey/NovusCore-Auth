@@ -14,7 +14,7 @@ namespace Client
     void GeneralHandlers::Setup(NetPacketHandler* netPacketHandler)
     {
         netPacketHandler->SetMessageHandler(Opcode::CMSG_REQUEST_REALMLIST, { ConnectionStatus::CONNECTED, 0, GeneralHandlers::HandleRequestRealmlist });
-        netPacketHandler->SetMessageHandler(Opcode::CMSG_SELECT_REALM, { ConnectionStatus::CONNECTED, 1, GeneralHandlers::HandleSelectRealm });
+        netPacketHandler->SetMessageHandler(Opcode::CMSG_SELECT_REALM, { ConnectionStatus::CONNECTED, sizeof(u16), GeneralHandlers::HandleSelectRealm});
     }
 
     bool GeneralHandlers::HandleRequestRealmlist(std::shared_ptr<NetClient> netClient, std::shared_ptr<NetPacket> packet)
@@ -32,13 +32,13 @@ namespace Client
         entt::registry* registry = ServiceLocator::GetRegistry();
         RealmlistCacheSingleton& realmlistCacheSingleton = registry->ctx<RealmlistCacheSingleton>();
 
-        u8 realmIndex = 0;
-        if (!packet->payload->GetU8(realmIndex))
+        u16 realmID = 0;
+        if (!packet->payload->GetU16(realmID))
             return false;
 
         std::shared_ptr<Bytebuffer> buffer = Bytebuffer::Borrow<128>();
 
-        auto itr = realmlistCacheSingleton.realmlistMap.find(realmIndex);
+        auto itr = realmlistCacheSingleton.realmlistMap.find(realmID);
         if (itr == realmlistCacheSingleton.realmlistMap.end())
         {
             // Realm does not exist, send back "SMSG_SEND_ADDRESS" to tell the client theres no available server
@@ -50,7 +50,7 @@ namespace Client
         }
         else
         {
-            if (!PacketUtils::Write_MSG_REQUEST_ADDRESS(buffer, AddressType::REALM, netClient->GetEntity(), &realmIndex, 1))
+            if (!PacketUtils::Write_MSG_REQUEST_ADDRESS(buffer, AddressType::REALM, netClient->GetEntity(), reinterpret_cast<u8*>(&realmID), sizeof(u16)))
                 return false;
 
             auto& connection = registry->ctx<ConnectionSingleton>();
