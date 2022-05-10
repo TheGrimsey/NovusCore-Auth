@@ -41,16 +41,16 @@ namespace Client
         auto itr = realmlistCacheSingleton.realmlistMap.find(realmID);
         if (itr == realmlistCacheSingleton.realmlistMap.end())
         {
-            // Realm does not exist, send back "SMSG_SEND_ADDRESS" to tell the client theres no available server
+            // Realm does not exist, send back "SMSG_SEND_REALM_CONNECTION_INFO" to tell the client theres no available server
 
-            if (!PacketUtils::Write_SMSG_SEND_ADDRESS(buffer, 0))
+            if (!PacketUtils::Write_SMSG_SEND_REALM_CONNECTION_INFO(buffer, 0))
                 return false;
             
             netClient->Send(buffer);
         }
         else
         {
-            if (!PacketUtils::Write_MSG_REQUEST_ADDRESS(buffer, AddressType::REALM, netClient->GetEntity(), reinterpret_cast<u8*>(&realmID), sizeof(u16)))
+            if (!PacketUtils::Write_SMSG_REQUEST_REALM_CONNECTION_INFO(buffer, netClient->GetEntity(), realmID))
                 return false;
 
             auto& connection = registry->ctx<ConnectionSingleton>();
