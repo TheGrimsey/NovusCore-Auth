@@ -29,8 +29,8 @@ void RealmlistCacheSystem::Update(entt::registry& registry)
 
         buffer->Put(Opcode::SMSG_SEND_REALMLIST);
 
-        size_t realmsNum = realmlistCacheSingleton.realmlistMap.size();
-        size_t packetSize = 16 * realmsNum;
+        size_t realmsNum = result->GetAffectedRows();
+        size_t packetSize = 16 * realmsNum + sizeof(u16);
         size_t sizeWriteOffset = buffer->writtenData;
 
         buffer->SkipWrite(sizeof(u16));
