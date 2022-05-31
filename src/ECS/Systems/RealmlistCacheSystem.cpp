@@ -1,6 +1,7 @@
 #include "RealmlistCacheSystem.h"
 #include <entt.hpp>
 #include <Networking/NetStructures.h>
+#include <Database/mysql/QueryResult.h>
 #include "../Components/Singletons/TimeSingleton.h"
 #include "../Components/Singletons/DBSingleton.h"
 #include "../Components/Singletons/RealmlistCacheSingleton.h"

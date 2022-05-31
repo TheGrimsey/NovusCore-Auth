@@ -3,6 +3,7 @@
 #include <Utils/Timer.h>
 #include "Utils/ServiceLocator.h"
 #include <Networking/NetPacketHandler.h>
+#include <Utils/DebugHandler.h>
 #include <tracy/Tracy.hpp>
 
 // Component Singletons
